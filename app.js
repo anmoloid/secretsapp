@@ -6,6 +6,8 @@ const mongoose=require("mongoose")
 const session=require("express-session")
 const passport=require("passport")
 const passportLocalMongoose=require("passport-local-mongoose")
+const GoogleStrategy = require('passport-google-oauth2').Strategy;
+const findOrCreate =require("mongoose-findorcreate")
 
 const app=express()
 app.set("view engine","ejs")
@@ -28,7 +30,9 @@ mongoose.connect("mongodb://localhost:27017/userDB",{useNewUrlParser:true})
 
 const userSchema= new mongoose.Schema({
     email: String,
-    password: String
+    password: String,
+    googleId: String,
+    secret: String
 })
 
 //this ensures that whatever user passwords we are creating are stored in a encrypted format. By default it encrypts the whole database,
@@ -38,6 +42,7 @@ const userSchema= new mongoose.Schema({
 
 //This plugin is used to hash and salt password and save users in mongodb
 userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(findOrCreate);
 
 const User= new mongoose.model("User",userSchema)
 
@@ -46,26 +51,75 @@ const User= new mongoose.model("User",userSchema)
 //and then crumbles the cookie to read the user data
 
 passport.use(User.createStrategy());
-passport.serializeUser(User.serializeUser());
-passport.deserializeUser(User.deserializeUser());
+passport.serializeUser(function(user, cb) {
+    process.nextTick(function() {
+      return cb(null, {
+        id: user.id,
+        username: user.username,
+        picture: user.picture
+      });
+    });
+  });
+  
+  passport.deserializeUser(function(user, cb) {
+    process.nextTick(function() {
+      return cb(null, user);
+    });
+  });
 
+passport.use(new GoogleStrategy({
+    clientID: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets",
+    passReqToCallback   : true
+  },
+  function(request, accessToken, refreshToken, profile, done) {
+    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+      return done(err, user);
+    });
+  }
+));
 
 
 app.get("/",function(req,res){
     res.render("home")
 })
+app.get('/auth/google',
+  passport.authenticate('google', { scope:
+      [ 'email', 'profile' ] }
+));
+app.get( '/auth/google/secrets',
+    passport.authenticate( 'google', {
+        successRedirect: '/secrets',
+        failureRedirect: '/login'
+}));
 app.get("/login",function(req,res){
     res.render("login")
 })
 app.get("/secrets",function(req,res){
     if(req.isAuthenticated()){
-        res.render("secrets")
+        User.find({secret:{$ne:null}}).then(function(results){
+            if(results){
+                const userWithSecrets=results
+                res.render("secrets",{userWithSecrets:userWithSecrets})
+            }
+           });
     }
     else{
         res.redirect("/login")
     }
     
 })
+app.get("/submit",function(req,res){
+    if(req.isAuthenticated()){
+        res.render("submit")
+    }
+    else{
+        res.redirect("/login")
+    }
+    
+})
+
 app.get("/register",function(req,res){
     res.render("register")
 })
@@ -118,7 +172,18 @@ app.post("/login",function(req,res){
 
   
 })
+app.post("/submit",function(req,res){
+    const submittedSecret= req.body.secret
+    User.findById(req.user.id).then(function(results){
+        if(results){
+            results.secret=submittedSecret
+            results.save().then(function(){
+                res.redirect("/secrets")
+            });
+        }
+    });
 
+})
 app.listen(process.env.PORT || 3000, function(req,res){
     console.log("Server started at port 3000")
 })
